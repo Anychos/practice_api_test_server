@@ -2,3 +2,5 @@
 .venv
 .env
 venv
+__pycache__
+start_commands.txt
