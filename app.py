@@ -3,7 +3,7 @@ from datetime import date
 from typing import List, Optional
 from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel, EmailStr, ConfigDict, field_validator
+from pydantic import BaseModel, EmailStr, ConfigDict, field_validator, Field
 from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, Date, ForeignKey, Identity
 from sqlalchemy.orm import sessionmaker, Session, relationship, declarative_base
 import jwt
@@ -166,11 +166,68 @@ class UserResponse(BaseModel):
 
 
 class ProductCreate(BaseModel):
-    name: str
-    description: str
-    price: float
+    name: str = Field(..., min_length=2, max_length=100,
+                      description="Название продукта, минимум 2 символа")
+    description: str = Field(..., min_length=10, max_length=1000,
+                             description="Описание продукта, минимум 10 символов")
+    price: float = Field(..., gt=0, le=1000000,
+                         description="Цена должна быть больше 0 и меньше 1,000,000")
     is_available: bool = True
-    image_url: str
+    image_url: str = Field(..., description="URL изображения продукта")
+
+    @field_validator('name')
+    def validate_name(cls, v):
+        v = v.strip()
+        if len(v) < 2:
+            raise ValueError('Название должно содержать минимум 2 символа')
+        if not re.match(r'^[a-zA-Zа-яА-Я0-9\s\-_.,]+$', v):
+            raise ValueError('Название содержит недопустимые символы')
+        return v
+
+    @field_validator('description')
+    def validate_description(cls, v):
+        v = v.strip()
+        if len(v) < 10:
+            raise ValueError('Описание должно содержать минимум 10 символов')
+        if len(v) > 1000:
+            raise ValueError('Описание не должно превышать 1000 символов')
+        return v
+
+    @field_validator('price')
+    def validate_price(cls, v):
+        if v <= 0:
+            raise ValueError('Цена должна быть больше 0')
+        if v > 1000000:
+            raise ValueError('Цена не должна превышать 1,000,000')
+        # Округляем до 2 знаков после запятой
+        return round(v, 2)
+
+    @field_validator('image_url')
+    def validate_image_url(cls, v):
+        v = v.strip()
+        if not v:
+            raise ValueError('URL изображения не может быть пустым')
+
+        url_pattern = re.compile(
+            r'^https?://'  # http:// или https://
+            r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z]{2,6}\.?|'  # домен
+            r'localhost|'  # localhost
+            r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'  # или IP
+            r'(?::\d+)?'  # порт
+            r'(?:/?|[/?]\S+)$', re.IGNORECASE)
+
+        if not url_pattern.match(v):
+            raise ValueError('Некорректный URL изображения')
+
+        image_extensions = ['.jpg', '.jpeg', '.png', '.webp']
+        if not any(v.lower().endswith(ext) for ext in image_extensions):
+            raise ValueError('URL должен вести на изображение (jpg, jpeg, png, webp)')
+
+        return v
+
+    class Config:
+        min_anystr_length = 1  # Минимальная длина для всех строковых полей
+        validate_all = True  # Валидация всех полей
 
 
 class ProductUpdate(BaseModel):
@@ -265,7 +322,6 @@ def get_db():
 
 
 def truncate_password(password: str, max_bytes: int = 72) -> str:
-    """Укорачивает пароль до максимального количества байт"""
     encoded = password.encode('utf-8')
     if len(encoded) <= max_bytes:
         return password
@@ -278,7 +334,6 @@ def truncate_password(password: str, max_bytes: int = 72) -> str:
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Верификация пароля с обработкой длинных паролей"""
     try:
         plain_password = truncate_password(plain_password)
         return pwd_context.verify(plain_password, hashed_password)
@@ -288,7 +343,6 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 
 def get_password_hash(password: str) -> str:
-    """Хеширование пароля с обработкой длинных паролей"""
     password = truncate_password(password)
     return pwd_context.hash(password)
 
@@ -337,7 +391,6 @@ async def get_current_admin(user: User = Depends(get_current_user)):
 
 @app.post("/login", response_model=LoginResponse, tags=["Authentication"])
 def login(request: LoginRequest, db: Session = Depends(get_db)):
-    """Аутентификация пользователя"""
     user = db.query(User).filter(User.email == request.email).first()
     if not user or not verify_password(request.password, user.password):
         raise HTTPException(
@@ -359,7 +412,6 @@ def login(request: LoginRequest, db: Session = Depends(get_db)):
 
 @app.post("/users", response_model=UserResponse, tags=["Users"])
 def create_user(user: UserCreate, db: Session = Depends(get_db)):
-    """Создание нового пользователя"""
     db_user = db.query(User).filter(User.email == user.email).first()
     if db_user:
         raise HTTPException(
@@ -384,7 +436,6 @@ def create_user(user: UserCreate, db: Session = Depends(get_db)):
 
 @app.get("/users/{user_id}", response_model=UserResponse, tags=["Users"])
 def get_user(user_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    """Получение пользователя по ID"""
     if current_user.id != user_id and not current_user.is_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -403,7 +454,6 @@ def get_user(user_id: int, db: Session = Depends(get_db), current_user: User = D
 @app.put("/users/{user_id}", response_model=UserResponse, tags=["Users"])
 def update_user(user_id: int, user_update: UserUpdate, db: Session = Depends(get_db),
                 current_user: User = Depends(get_current_user)):
-    """Обновление пользователя"""
     if current_user.id != user_id and not current_user.is_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -431,7 +481,6 @@ def update_user(user_id: int, user_update: UserUpdate, db: Session = Depends(get
 
 @app.delete("/users/{user_id}", tags=["Users"])
 def delete_user(user_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    """Удаление пользователя"""
     if current_user.id != user_id and not current_user.is_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -462,7 +511,6 @@ def create_product(product: ProductCreate, db: Session = Depends(get_db)):
 
 @app.get("/products/{product_id}", response_model=ProductResponse, tags=["Products"])
 def get_product(product_id: int, db: Session = Depends(get_db)):
-    """Получение продукта по ID"""
     product = db.query(Product).filter(Product.id == product_id).first()
     if not product:
         raise HTTPException(
@@ -474,7 +522,6 @@ def get_product(product_id: int, db: Session = Depends(get_db)):
 
 @app.get("/products", response_model=List[ProductResponse], tags=["Products"])
 def get_all_products(db: Session = Depends(get_db)):
-    """Получение всех продуктов"""
     products = db.query(Product).all()
     return [ProductResponse.model_validate(p) for p in products]
 
@@ -482,7 +529,6 @@ def get_all_products(db: Session = Depends(get_db)):
 @app.put("/products/{product_id}", response_model=ProductResponse, tags=["Products"],
          dependencies=[Depends(get_current_admin)])
 def update_product(product_id: int, product_update: ProductUpdate, db: Session = Depends(get_db)):
-    """Обновление продукта (только для администратора)"""
     product = db.query(Product).filter(Product.id == product_id).first()
     if not product:
         raise HTTPException(
@@ -501,7 +547,6 @@ def update_product(product_id: int, product_update: ProductUpdate, db: Session =
 
 @app.delete("/products/{product_id}", tags=["Products"], dependencies=[Depends(get_current_admin)])
 def delete_product(product_id: int, db: Session = Depends(get_db)):
-    """Удаление продукта (только для администратора)"""
     product = db.query(Product).filter(Product.id == product_id).first()
     if not product:
         raise HTTPException(
@@ -520,7 +565,6 @@ def add_item_to_cart(
         current_user: User = Depends(get_current_user),
         db: Session = Depends(get_db)
 ):
-    """Добавление товара в корзину"""
     product = db.query(Product).filter(Product.id == item.product_id).first()
     if not product:
         raise HTTPException(
@@ -563,7 +607,6 @@ def add_item_to_cart(
 
 @app.get("/cart", response_model=CartResponse, tags=["Cart"])
 def get_cart(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """Получение корзины пользователя"""
     cart = db.query(Cart).filter(Cart.user_id == current_user.id).first()
 
     if not cart:
@@ -599,7 +642,6 @@ def update_cart_item(
         current_user: User = Depends(get_current_user),
         db: Session = Depends(get_db)
 ):
-    """Обновление количества товара в корзине"""
     cart = db.query(Cart).filter(Cart.user_id == current_user.id).first()
     if not cart:
         raise HTTPException(
@@ -667,7 +709,6 @@ def clear_cart(
         current_user: User = Depends(get_current_user),
         db: Session = Depends(get_db)
 ):
-    """Очистка корзины пользователя"""
     cart = db.query(Cart).filter(Cart.user_id == current_user.id).first()
     if not cart:
         raise HTTPException(
@@ -686,7 +727,6 @@ def create_order(
         current_user: User = Depends(get_current_user),
         db: Session = Depends(get_db)
 ):
-    """Создание нового заказа"""
     cart = db.query(Cart).filter(Cart.id == order.cart_id).first()
     if not cart:
         raise HTTPException(
@@ -713,7 +753,6 @@ def get_order(
         current_user: User = Depends(get_current_user),
         db: Session = Depends(get_db)
 ):
-    """Получение заказа по ID"""
     order = db.query(Order).filter(Order.id == order_id).first()
     if not order:
         raise HTTPException(
@@ -732,7 +771,6 @@ def get_order(
 
 @app.get("/orders", response_model=List[OrderResponse], tags=["Orders"])
 def get_user_orders(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """Получение всех заказов пользователя"""
     orders = db.query(Order).filter(Order.user_id == current_user.id).all()
     return [OrderResponse.model_validate(o) for o in orders]
 
