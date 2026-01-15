@@ -29,7 +29,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -71,6 +71,7 @@ class Product(Base):
     price = Column(Float, nullable=False)
     is_available = Column(Boolean, default=True, nullable=False)
     image_url = Column(String, nullable=False)
+    stock_quantity = Column(Integer, default=0, nullable=False)
 
 
 class CartItem(Base):
@@ -174,6 +175,8 @@ class ProductCreate(BaseModel):
                          description="Цена должна быть больше 0 и меньше 1,000,000")
     is_available: bool = True
     image_url: str = Field(..., description="URL изображения продукта")
+    stock_quantity: int = Field(..., ge=0, le=1000000,
+                                description="Количество товара в наличии от 0 до 1,000,000")
 
     @field_validator('name')
     def validate_name(cls, v):
@@ -221,8 +224,16 @@ class ProductCreate(BaseModel):
 
         image_extensions = ['.jpg', '.jpeg', '.png', '.webp']
         if not any(v.lower().endswith(ext) for ext in image_extensions):
-            raise ValueError('URL должен вести на изображение (jpg, jpeg, png, webp)')
+            raise ValueError('URL должен быть в формате (jpg, jpeg, png, webp)')
 
+        return v
+
+    @field_validator('stock_quantity')
+    def validate_stock_quantity(cls, v):
+        if v < 0:
+            raise ValueError('Количество товара не может быть отрицательным')
+        if v > 1000000:
+            raise ValueError('Количество товара не должно превышать 1,000,000')
         return v
 
     class Config:
@@ -236,6 +247,8 @@ class ProductUpdate(BaseModel):
     price: Optional[float] = None
     is_available: Optional[bool] = None
     image_url: Optional[str] = None
+    stock_quantity: Optional[int] = Field(None, ge=0, le=1000000,
+                                          description="Количество товара в наличии от 0 до 1,000,000")
 
 
 class ProductResponse(BaseModel):
@@ -245,17 +258,48 @@ class ProductResponse(BaseModel):
     price: float
     is_available: bool
     image_url: str
+    stock_quantity: int
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CartItemProductResponse(BaseModel):
+    product_id: int
+    quantity: int
+    product_name: str
+    product_price: float
+    product_image_url: str
+    is_available: bool
+    has_enough_stock: bool
+    available_quantity: int
 
     model_config = ConfigDict(from_attributes=True)
 
 
 class CartItemCreate(BaseModel):
     product_id: int
-    quantity: int
+    quantity: int = Field(..., gt=0, le=100, description="Количество должно быть от 1 до 100")
+
+    @field_validator('quantity')
+    def validate_quantity(cls, v):
+        if v <= 0:
+            raise ValueError('Количество должно быть положительным числом')
+        if v > 100:
+            raise ValueError('Нельзя добавить более 100 единиц товара за раз')
+        return v
 
 
 class CartItemUpdate(BaseModel):
-    quantity: Optional[int] = None
+    quantity: Optional[int] = Field(None, gt=0, le=100, description="Количество должно быть от 1 до 100")
+
+    @field_validator('quantity')
+    def validate_quantity(cls, v):
+        if v is not None:
+            if v <= 0:
+                raise ValueError('Количество должно быть положительным числом')
+            if v > 100:
+                raise ValueError('Нельзя установить более 100 единиц товара')
+        return v
 
 
 class AddItemToCartResponse(BaseModel):
@@ -277,13 +321,20 @@ class CartResponse(BaseModel):
     id: int
     user_id: int
     total_quantity: int
-    items: List[CartItemResponse] = []
+    total_price: float
+    items: List[CartItemProductResponse] = []
 
     model_config = ConfigDict(from_attributes=True)
 
 
 class OrderCreate(BaseModel):
     cart_id: int
+
+    @field_validator('cart_id')
+    def validate_cart_id(cls, v):
+        if v <= 0:
+            raise ValueError('ID корзины должно быть положительным числом')
+        return v
 
 
 class OrderResponse(BaseModel):
@@ -387,6 +438,29 @@ async def get_current_admin(user: User = Depends(get_current_user)):
             detail="Not enough permissions"
         )
     return user
+
+
+def check_product_availability(product_id: int, requested_quantity: int, db: Session) -> Product:
+    """Проверяет доступность товара и возвращает продукт если он доступен"""
+    product = db.query(Product).filter(
+        Product.id == product_id,
+        Product.is_available == True
+    ).first()
+
+    if not product:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Продукт не найден или недоступен"
+        )
+
+    # Проверка количества товара в наличии
+    if requested_quantity > product.stock_quantity:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Недостаточно товара '{product.name}' в наличии. Доступно: {product.stock_quantity}, запрошено: {requested_quantity}"
+        )
+
+    return product
 
 
 @app.post("/login", response_model=LoginResponse, tags=["Authentication"])
@@ -565,11 +639,16 @@ def add_item_to_cart(
         current_user: User = Depends(get_current_user),
         db: Session = Depends(get_db)
 ):
-    product = db.query(Product).filter(Product.id == item.product_id).first()
+    # Получаем продукт и проверяем доступность
+    product = db.query(Product).filter(
+        Product.id == item.product_id,
+        Product.is_available == True
+    ).first()
+
     if not product:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Product not found"
+            detail="Продукт не найден или недоступен"
         )
 
     cart = db.query(Cart).filter(Cart.user_id == current_user.id).first()
@@ -584,8 +663,27 @@ def add_item_to_cart(
         CartItem.product_id == item.product_id
     ).first()
 
+    new_total_quantity = item.quantity
     if existing_item:
-        existing_item.quantity += item.quantity
+        new_total_quantity += existing_item.quantity
+
+    # Проверяем, что общее количество не превышает доступное на складе
+    if new_total_quantity > product.stock_quantity:
+        available = product.stock_quantity - (existing_item.quantity if existing_item else 0)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Недостаточно товара '{product.name}' в наличии. Доступно для добавления: {available}"
+        )
+
+    # Проверяем, что общее количество не превышает разумный лимит
+    if new_total_quantity > 100:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Нельзя добавить более 100 единиц товара '{product.name}' в корзину"
+        )
+
+    if existing_item:
+        existing_item.quantity = new_total_quantity
         db_item = existing_item
     else:
         db_item = CartItem(
@@ -614,23 +712,41 @@ def get_cart(current_user: User = Depends(get_current_user), db: Session = Depen
             id=0,
             user_id=current_user.id,
             total_quantity=0,
+            total_price=0.0,
             items=[]
         )
 
-    total_quantity = sum(item.quantity for item in cart.items)
-
+    total_quantity = 0
+    total_price = 0.0
     cart_items_response = []
+
     for item in cart.items:
-        item_data = {
-            "product_id": item.product_id,
-            "quantity": item.quantity
-        }
-        cart_items_response.append(CartItemResponse.model_validate(item_data))
+        product = db.query(Product).filter(Product.id == item.product_id).first()
+        if product:
+            item_total_price = product.price * item.quantity
+            total_quantity += item.quantity
+            total_price += item_total_price
+
+            # Проверяем, достаточно ли товара на складе
+            has_enough_stock = item.quantity <= product.stock_quantity
+
+            item_data = {
+                "product_id": item.product_id,
+                "quantity": item.quantity,
+                "product_name": product.name,
+                "product_price": product.price,
+                "product_image_url": product.image_url,
+                "is_available": product.is_available,
+                "has_enough_stock": has_enough_stock,  # Добавляем информацию о наличии
+                "available_quantity": product.stock_quantity  # Добавляем доступное количество
+            }
+            cart_items_response.append(CartItemProductResponse.model_validate(item_data))
 
     return CartResponse(
         id=cart.id,
         user_id=cart.user_id,
         total_quantity=total_quantity,
+        total_price=round(total_price, 2),
         items=cart_items_response
     )
 
@@ -646,7 +762,7 @@ def update_cart_item(
     if not cart:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Cart not found"
+            detail="Корзина не найдена"
         )
 
     cart_item = db.query(CartItem).filter(
@@ -657,8 +773,28 @@ def update_cart_item(
     if not cart_item:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Item not found in cart"
+            detail="Товар не найден в корзине"
         )
+
+    # Проверяем доступность продукта перед обновлением
+    if item_update.quantity is not None and item_update.quantity > 0:
+        product = db.query(Product).filter(
+            Product.id == product_id,
+            Product.is_available == True
+        ).first()
+
+        if not product:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Продукт не найден или недоступен"
+            )
+
+        # Проверяем, что новое количество не превышает доступное на складе
+        if item_update.quantity > product.stock_quantity:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Недостаточно товара '{product.name}' в наличии. Доступно: {product.stock_quantity}"
+            )
 
     update_data = item_update.model_dump(exclude_unset=True)
     for field, value in update_data.items():
@@ -731,20 +867,114 @@ def create_order(
     if not cart:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Cart not found"
+            detail="Корзина не найдена"
         )
 
     if cart.user_id != current_user.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Cart does not belong to the current user"
+            detail="Корзина не принадлежит текущему пользователю"
         )
+
+    # Проверяем, что корзина не пустая
+    cart_items = db.query(CartItem).filter(CartItem.cart_id == cart.id).all()
+    if not cart_items:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Нельзя создать заказ с пустой корзиной"
+        )
+
+    # Проверяем доступность всех товаров в корзине И количество на складе
+    for cart_item in cart_items:
+        product = db.query(Product).filter(
+            Product.id == cart_item.product_id,
+            Product.is_available == True
+        ).first()
+
+        if not product:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Товар с ID {cart_item.product_id} недоступен"
+            )
+
+        # Проверяем, что количество в корзине не превышает доступное на складе
+        if cart_item.quantity > product.stock_quantity:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Недостаточно товара '{product.name}' в наличии. В корзине: {cart_item.quantity}, доступно: {product.stock_quantity}"
+            )
+
+    # ВАЖНО: Уменьшаем количество товаров на складе после создания заказа
+    for cart_item in cart_items:
+        product = db.query(Product).filter(Product.id == cart_item.product_id).first()
+        if product:
+            product.stock_quantity -= cart_item.quantity
+            if product.stock_quantity < 0:
+                product.stock_quantity = 0
 
     db_order = Order(cart_id=order.cart_id, user_id=current_user.id)
     db.add(db_order)
     db.commit()
     db.refresh(db_order)
+
     return OrderResponse.model_validate(db_order)
+
+
+@app.get("/cart/validate", tags=["Cart"])
+def validate_cart(
+        current_user: User = Depends(get_current_user),
+        db: Session = Depends(get_db)
+):
+    """Проверяет корзину перед оформлением заказа"""
+    cart = db.query(Cart).filter(Cart.user_id == current_user.id).first()
+
+    if not cart:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Корзина не найдена"
+        )
+
+    cart_items = db.query(CartItem).filter(CartItem.cart_id == cart.id).all()
+
+    if not cart_items:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Корзина пустая"
+        )
+
+    validation_errors = []
+    total_price = 0.0
+
+    for cart_item in cart_items:
+        product = db.query(Product).filter(Product.id == cart_item.product_id).first()
+
+        if not product:
+            validation_errors.append(f"Товар с ID {cart_item.product_id} не найден")
+        elif not product.is_available:
+            validation_errors.append(f"Товар '{product.name}' недоступен")
+        elif cart_item.quantity > product.stock_quantity:
+            validation_errors.append(
+                f"Недостаточно товара '{product.name}' в наличии. В корзине: {cart_item.quantity}, доступно: {product.stock_quantity}"
+            )
+        else:
+            total_price += product.price * cart_item.quantity
+
+    if validation_errors:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "errors": validation_errors,
+                "message": "В корзине есть проблемы с товарами"
+            }
+        )
+
+    return {
+        "valid": True,
+        "message": "Корзина готова к оформлению заказа",
+        "total_items": len(cart_items),
+        "total_price": round(total_price, 2),
+        "can_checkout": True
+    }
 
 
 @app.get("/orders/{order_id}", response_model=OrderResponse, tags=["Orders"])
