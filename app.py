@@ -29,7 +29,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -129,22 +129,22 @@ class UserCreate(BaseModel):
         v = v.strip()
         cleaned = v.replace(" ", "")
         if not v:
-            raise ValueError('Phone number cannot be empty')
+            raise ValueError('Номер телефона не может быть пустым')
         if len(v) < 10:
-            raise ValueError('Phone number is too short')
+            raise ValueError('Номер телефона должен содержать не менее 10 цифр')
         if len(cleaned) > 12:
-            raise ValueError('Phone number is too long')
+            raise ValueError('Номер телефона должен содержать не более 12 цифр')
         if not re.fullmatch(r'\+?\d+', cleaned):
-            raise ValueError('Phone number must contain only digits and optional + at the beginning')
+            raise ValueError('Номер телефона должен содержать только цифры и опционально символ + в начале')
         return v
 
     @field_validator('password')
     def validate_password(cls, v):
         v = v.strip()
         if len(v) < 6:
-            raise ValueError('Password must be at least 6 characters long')
+            raise ValueError('Пароль должен содержать не менее 6 символов')
         if len(v) > 128:
-            raise ValueError('Password must be at most 128 characters long')
+            raise ValueError('Пароль должен содержать не более 128 символов')
 
         return v
 
@@ -168,11 +168,11 @@ class UserResponse(BaseModel):
 
 class ProductCreate(BaseModel):
     name: str = Field(..., min_length=2, max_length=100,
-                      description="Название продукта, минимум 2 символа")
+                      description="Название продукта минимум 2 символа")
     description: str = Field(..., min_length=10, max_length=1000,
-                             description="Описание продукта, минимум 10 символов")
+                             description="Описание продукта минимум 10 символов")
     price: float = Field(..., gt=0, le=1000000,
-                         description="Цена должна быть больше 0 и меньше 1,000,000")
+                         description="Цена от 1 до 1,000,000")
     is_available: bool = True
     image_url: str = Field(..., description="URL изображения продукта")
     stock_quantity: int = Field(..., ge=0, le=1000000,
@@ -202,7 +202,6 @@ class ProductCreate(BaseModel):
             raise ValueError('Цена должна быть больше 0')
         if v > 1000000:
             raise ValueError('Цена не должна превышать 1,000,000')
-        # Округляем до 2 знаков после запятой
         return round(v, 2)
 
     @field_validator('image_url')
@@ -224,7 +223,7 @@ class ProductCreate(BaseModel):
 
         image_extensions = ['.jpg', '.jpeg', '.png', '.webp']
         if not any(v.lower().endswith(ext) for ext in image_extensions):
-            raise ValueError('URL должен быть в формате (jpg, jpeg, png, webp)')
+            raise ValueError('URL должен быть в формате: jpg, jpeg, png, webp')
 
         return v
 
@@ -298,7 +297,7 @@ class CartItemUpdate(BaseModel):
             if v <= 0:
                 raise ValueError('Количество должно быть положительным числом')
             if v > 100:
-                raise ValueError('Нельзя установить более 100 единиц товара')
+                raise ValueError('Нельзя добавить более 100 единиц товара за раз')
         return v
 
 
@@ -389,7 +388,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         plain_password = truncate_password(plain_password)
         return pwd_context.verify(plain_password, hashed_password)
     except Exception as e:
-        print(f"Password verification error: {e}")
+        print(f"Ошибка при проверке пароля: {e}")
         return False
 
 
@@ -418,7 +417,7 @@ async def get_current_user(authorization: HTTPAuthorizationCredentials = Depends
     if not token_data:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication credentials",
+            detail="Невалидные данные авторизации",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
@@ -426,7 +425,7 @@ async def get_current_user(authorization: HTTPAuthorizationCredentials = Depends
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
+            detail="Пользователь не найден"
         )
     return user
 
@@ -435,13 +434,12 @@ async def get_current_admin(user: User = Depends(get_current_user)):
     if not user.is_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not enough permissions"
+            detail="Недостаточно прав"
         )
     return user
 
 
 def check_product_availability(product_id: int, requested_quantity: int, db: Session) -> Product:
-    """Проверяет доступность товара и возвращает продукт если он доступен"""
     product = db.query(Product).filter(
         Product.id == product_id,
         Product.is_available == True
@@ -469,7 +467,7 @@ def login(request: LoginRequest, db: Session = Depends(get_db)):
     if not user or not verify_password(request.password, user.password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password"
+            detail="Невалидный логин или пароль"
         )
 
     access_token = create_access_token({
@@ -490,7 +488,7 @@ def create_user(user: UserCreate, db: Session = Depends(get_db)):
     if db_user:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already registered"
+            detail="Email уже зарегистрирован"
         )
 
     hashed_password = get_password_hash(user.password)
@@ -513,14 +511,14 @@ def get_user(user_id: int, db: Session = Depends(get_db), current_user: User = D
     if current_user.id != user_id and not current_user.is_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not enough permissions"
+            detail="Недостаточно прав"
         )
 
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
+            detail="Пользователь не найден"
         )
     return UserResponse.model_validate(user)
 
@@ -531,14 +529,14 @@ def update_user(user_id: int, user_update: UserUpdate, db: Session = Depends(get
     if current_user.id != user_id and not current_user.is_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not enough permissions"
+            detail="Недостаточно прав"
         )
 
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
+            detail="Пользователь не найден"
         )
 
     update_data = user_update.model_dump(exclude_unset=True)
@@ -558,24 +556,23 @@ def delete_user(user_id: int, db: Session = Depends(get_db), current_user: User 
     if current_user.id != user_id and not current_user.is_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not enough permissions"
+            detail="Недостаточно прав"
         )
 
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
+            detail="Пользователь не найден"
         )
 
     db.delete(user)
     db.commit()
-    return {"message": "User deleted successfully"}
+    return {"message": "Пользователь удален"}
 
 
 @app.post("/products", response_model=ProductResponse, tags=["Products"], dependencies=[Depends(get_current_admin)])
 def create_product(product: ProductCreate, db: Session = Depends(get_db)):
-    """Создание нового продукта (только для администратора)"""
     db_product = Product(**product.model_dump())
     db.add(db_product)
     db.commit()
@@ -589,7 +586,7 @@ def get_product(product_id: int, db: Session = Depends(get_db)):
     if not product:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Product not found"
+            detail="Продукт не найден"
         )
     return ProductResponse.model_validate(product)
 
@@ -607,7 +604,7 @@ def update_product(product_id: int, product_update: ProductUpdate, db: Session =
     if not product:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Product not found"
+            detail="Продукт не найден"
         )
 
     update_data = product_update.model_dump(exclude_unset=True)
@@ -625,12 +622,12 @@ def delete_product(product_id: int, db: Session = Depends(get_db)):
     if not product:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Product not found"
+            detail="Продукт не найден"
         )
 
     db.delete(product)
     db.commit()
-    return {"message": "Product deleted successfully"}
+    return {"message": "Продукт удален"}
 
 
 @app.post("/cart/items", response_model=AddItemToCartResponse, tags=["Cart"])
@@ -639,7 +636,6 @@ def add_item_to_cart(
         current_user: User = Depends(get_current_user),
         db: Session = Depends(get_db)
 ):
-    # Получаем продукт и проверяем доступность
     product = db.query(Product).filter(
         Product.id == item.product_id,
         Product.is_available == True
@@ -667,7 +663,6 @@ def add_item_to_cart(
     if existing_item:
         new_total_quantity += existing_item.quantity
 
-    # Проверяем, что общее количество не превышает доступное на складе
     if new_total_quantity > product.stock_quantity:
         available = product.stock_quantity - (existing_item.quantity if existing_item else 0)
         raise HTTPException(
@@ -727,7 +722,6 @@ def get_cart(current_user: User = Depends(get_current_user), db: Session = Depen
             total_quantity += item.quantity
             total_price += item_total_price
 
-            # Проверяем, достаточно ли товара на складе
             has_enough_stock = item.quantity <= product.stock_quantity
 
             item_data = {
@@ -737,8 +731,8 @@ def get_cart(current_user: User = Depends(get_current_user), db: Session = Depen
                 "product_price": product.price,
                 "product_image_url": product.image_url,
                 "is_available": product.is_available,
-                "has_enough_stock": has_enough_stock,  # Добавляем информацию о наличии
-                "available_quantity": product.stock_quantity  # Добавляем доступное количество
+                "has_enough_stock": has_enough_stock,
+                "available_quantity": product.stock_quantity
             }
             cart_items_response.append(CartItemProductResponse.model_validate(item_data))
 
@@ -816,12 +810,11 @@ def remove_item_from_cart(
         current_user: User = Depends(get_current_user),
         db: Session = Depends(get_db)
 ):
-    """Удаление товара из корзины"""
     cart = db.query(Cart).filter(Cart.user_id == current_user.id).first()
     if not cart:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Cart not found"
+            detail="Корзина не найдена"
         )
 
     cart_item = db.query(CartItem).filter(
@@ -832,12 +825,12 @@ def remove_item_from_cart(
     if not cart_item:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Item not found in cart"
+            detail="Продукт не найден в корзине"
         )
 
     db.delete(cart_item)
     db.commit()
-    return {"message": "Item removed from cart successfully"}
+    return {"message": "Продукт удален из корзины"}
 
 
 @app.delete("/cart", tags=["Cart"])
@@ -849,12 +842,12 @@ def clear_cart(
     if not cart:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Cart not found"
+            detail="Корзина не найдена"
         )
 
     db.query(CartItem).filter(CartItem.cart_id == cart.id).delete()
     db.commit()
-    return {"message": "Cart cleared successfully"}
+    return {"message": "Корзина очищена"}
 
 
 @app.post("/orders", response_model=OrderResponse, tags=["Orders"])
@@ -925,7 +918,6 @@ def validate_cart(
         current_user: User = Depends(get_current_user),
         db: Session = Depends(get_db)
 ):
-    """Проверяет корзину перед оформлением заказа"""
     cart = db.query(Cart).filter(Cart.user_id == current_user.id).first()
 
     if not cart:
@@ -987,13 +979,13 @@ def get_order(
     if not order:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Order not found"
+            detail="Заказ не найден"
         )
 
     if order.user_id != current_user.id and not current_user.is_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not enough permissions"
+            detail="Недостаточно прав"
         )
 
     return OrderResponse.model_validate(order)
