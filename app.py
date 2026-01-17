@@ -175,7 +175,7 @@ class ProductCreate(BaseModel):
                          description="Цена от 1 до 1,000,000")
     is_available: bool = True
     image_url: str = Field(..., description="URL изображения продукта")
-    stock_quantity: int = Field(..., ge=0, le=1000000,
+    stock_quantity: int = Field(..., ge=0, le=100000,
                                 description="Количество товара в наличии от 0 до 1,000,000")
 
     @field_validator('name')
@@ -231,8 +231,8 @@ class ProductCreate(BaseModel):
     def validate_stock_quantity(cls, v):
         if v < 0:
             raise ValueError('Количество товара не может быть отрицательным')
-        if v > 1000000:
-            raise ValueError('Количество товара не должно превышать 1,000,000')
+        if v > 100000:
+            raise ValueError('Количество товара не должно превышать 100,000')
         return v
 
     class Config:
@@ -246,8 +246,8 @@ class ProductUpdate(BaseModel):
     price: Optional[float] = None
     is_available: Optional[bool] = None
     image_url: Optional[str] = None
-    stock_quantity: Optional[int] = Field(None, ge=0, le=1000000,
-                                          description="Количество товара в наличии от 0 до 1,000,000")
+    stock_quantity: Optional[int] = Field(None, ge=0, le=100000,
+                                          description="Количество товара в наличии от 0 до 100,000")
 
 
 class ProductResponse(BaseModel):
@@ -455,7 +455,7 @@ def check_product_availability(product_id: int, requested_quantity: int, db: Ses
     if requested_quantity > product.stock_quantity:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Недостаточно товара '{product.name}' в наличии. Доступно: {product.stock_quantity}, запрошено: {requested_quantity}"
+            detail="Недостаточно товара в наличии"
         )
 
     return product
@@ -667,14 +667,14 @@ def add_item_to_cart(
         available = product.stock_quantity - (existing_item.quantity if existing_item else 0)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Недостаточно товара '{product.name}' в наличии. Доступно для добавления: {available}"
+            detail="Недостаточно товара в наличии"
         )
 
     # Проверяем, что общее количество не превышает разумный лимит
     if new_total_quantity > 100:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Нельзя добавить более 100 единиц товара '{product.name}' в корзину"
+            detail="Нельзя добавить более 100 единиц товара за раз"
         )
 
     if existing_item:
@@ -727,9 +727,9 @@ def get_cart(current_user: User = Depends(get_current_user), db: Session = Depen
             item_data = {
                 "product_id": item.product_id,
                 "quantity": item.quantity,
-                "product_name": product.name,
-                "product_price": product.price,
-                "product_image_url": product.image_url,
+                "name": product.name,
+                "price": product.price,
+                "image_url": product.image_url,
                 "is_available": product.is_available,
                 "has_enough_stock": has_enough_stock,
                 "available_quantity": product.stock_quantity
@@ -787,7 +787,7 @@ def update_cart_item(
         if item_update.quantity > product.stock_quantity:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Недостаточно товара '{product.name}' в наличии. Доступно: {product.stock_quantity}"
+                detail="Недостаточно товара в наличии"
             )
 
     update_data = item_update.model_dump(exclude_unset=True)
@@ -887,14 +887,14 @@ def create_order(
         if not product:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Товар с ID {cart_item.product_id} недоступен"
+                detail="В корзине есть недоступные для заказа товары"
             )
 
         # Проверяем, что количество в корзине не превышает доступное на складе
         if cart_item.quantity > product.stock_quantity:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Недостаточно товара '{product.name}' в наличии. В корзине: {cart_item.quantity}, доступно: {product.stock_quantity}"
+                detail="Недостаточно товара в наличии"
             )
 
     # ВАЖНО: Уменьшаем количество товаров на складе после создания заказа
@@ -946,7 +946,7 @@ def validate_cart(
             validation_errors.append(f"Товар '{product.name}' недоступен")
         elif cart_item.quantity > product.stock_quantity:
             validation_errors.append(
-                f"Недостаточно товара '{product.name}' в наличии. В корзине: {cart_item.quantity}, доступно: {product.stock_quantity}"
+                "Недостаточно товара в наличии"
             )
         else:
             total_price += product.price * cart_item.quantity
