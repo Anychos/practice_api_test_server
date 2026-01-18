@@ -120,7 +120,7 @@ recreate_tables()
 class UserCreate(BaseModel):
     email: EmailStr
     name: str
-    phone: str
+    phone: str = Field(examples=['+71234567890'])
     password: str
     is_admin: bool = False
 
@@ -174,9 +174,9 @@ class ProductCreate(BaseModel):
     price: float = Field(..., gt=0, le=1000000,
                          description="Цена от 1 до 1,000,000")
     is_available: bool = True
-    image_url: str = Field(..., description="URL изображения продукта")
+    image_url: str = Field(..., description="URL изображения продукта", examples=['https://example.com/image.jpg'])
     stock_quantity: int = Field(..., ge=0, le=100000,
-                                description="Количество товара в наличии от 0 до 1,000,000")
+                                description="Количество товара в наличии от 0 до 1,000,000", examples=[10])
 
     @field_validator('name')
     def validate_name(cls, v):
@@ -241,13 +241,89 @@ class ProductCreate(BaseModel):
 
 
 class ProductUpdate(BaseModel):
-    name: Optional[str] = None
-    description: Optional[str] = None
-    price: Optional[float] = None
+    """Схема для обновления продукта"""
+    name: Optional[str] = Field(
+        default=None,
+        min_length=2,
+        max_length=100,
+        description="Название продукта минимум 2 символа"
+    )
+    description: Optional[str] = Field(
+        default=None,
+        min_length=10,
+        max_length=1000,
+        description="Описание продукта минимум 10 символов"
+    )
+    price: Optional[float] = Field(
+        default=None,
+        gt=0,
+        le=1000000,
+        description="Цена от 1 до 1,000,000"
+    )
     is_available: Optional[bool] = None
-    image_url: Optional[str] = None
-    stock_quantity: Optional[int] = Field(None, ge=0, le=100000,
-                                          description="Количество товара в наличии от 0 до 100,000")
+    image_url: Optional[str] = Field(
+        default=None,
+        description="URL изображения продукта",
+        examples=['https://example.com/image.jpg']
+    )
+    stock_quantity: Optional[int] = Field(
+        default=None,
+        ge=0,
+        le=100000,
+        description="Количество товара в наличии от 0 до 100,000",
+        examples=[10]
+    )
+
+
+class ProductPutSchema(BaseModel):
+    """Схема для ПОЛНОГО обновления (PUT) - все поля обязательны"""
+    name: str = Field(
+        ...,
+        min_length=2,
+        max_length=100,
+        description="Название продукта минимум 2 символа"
+    )
+    description: str = Field(
+        ...,
+        min_length=10,
+        max_length=1000,
+        description="Описание продукта минимум 10 символов"
+    )
+    price: float = Field(
+        ...,
+        gt=0,
+        le=1000000,
+        description="Цена от 1 до 1,000,000"
+    )
+    is_available: bool = Field(
+        ...,
+        description="Доступен ли продукт для покупки"
+    )
+    image_url: str = Field(
+        ...,
+        description="URL изображения продукта",
+        examples=['https://example.com/image.jpg']
+    )
+    stock_quantity: int = Field(
+        ...,
+        ge=0,
+        le=100000,
+        description="Количество товара в наличии от 0 до 100,000",
+        examples=[10]
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "name": "Смартфон Premium",
+                "description": "Флагманский смартфон с OLED дисплеем, 512ГБ памяти и тройной камерой",
+                "price": 89999.99,
+                "is_available": True,
+                "image_url": "https://example.com/images/smartphone.jpg",
+                "stock_quantity": 50
+            }
+        }
+    )
 
 
 class ProductResponse(BaseModel):
@@ -369,6 +445,54 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+def validate_product_update(update_data: dict, partial: bool = False) -> list:
+    """
+    Валидация данных обновления продукта
+
+    :param update_data: Словарь с данными для обновления
+    :param partial: True для PATCH (частичное обновление)
+    :return: Список ошибок валидации
+    """
+    errors = []
+
+    # Валидация для поля name
+    if 'name' in update_data and update_data['name'] is not None:
+        name = update_data['name']
+        if not partial and not name:  # Для PUT обязательно
+            errors.append("Название продукта обязательно")
+        elif name and (len(name) < 2 or len(name) > 100):
+            errors.append("Название должно быть от 2 до 100 символов")
+
+    # Валидация для поля description
+    if 'description' in update_data and update_data['description'] is not None:
+        desc = update_data['description']
+        if not partial and not desc:  # Для PUT обязательно
+            errors.append("Описание продукта обязательно")
+        elif desc and (len(desc) < 10 or len(desc) > 1000):
+            errors.append("Описание должно быть от 10 до 1000 символов")
+
+    # Валидация для поля price
+    if 'price' in update_data and update_data['price'] is not None:
+        price = update_data['price']
+        if not partial and price is None:  # Для PUT обязательно
+            errors.append("Цена продукта обязательна")
+        elif price is not None and (price <= 0 or price > 1000000):
+            errors.append("Цена должна быть от 1 до 1,000,000")
+
+    # Валидация для поля stock_quantity
+    if 'stock_quantity' in update_data and update_data['stock_quantity'] is not None:
+        stock = update_data['stock_quantity']
+        if stock is not None and (stock < 0 or stock > 100000):
+            errors.append("Количество должно быть от 0 до 100,000")
+
+    # Валидация для поля image_url
+    if 'image_url' in update_data and update_data['image_url'] is not None:
+        if not partial and not update_data['image_url']:  # Для PUT обязательно
+            errors.append("URL изображения обязателен")
+
+    return errors
 
 
 def truncate_password(password: str, max_bytes: int = 72) -> str:
@@ -523,6 +647,14 @@ def get_user(user_id: int, db: Session = Depends(get_db), current_user: User = D
     return UserResponse.model_validate(user)
 
 
+@app.get("/user/me", response_model=UserResponse, tags=["Users"])
+def get_current_user_info(
+        current_user: User = Depends(get_current_user),
+):
+
+    return UserResponse.model_validate(current_user)
+
+
 @app.put("/users/{user_id}", response_model=UserResponse, tags=["Users"])
 def update_user(user_id: int, user_update: UserUpdate, db: Session = Depends(get_db),
                 current_user: User = Depends(get_current_user)):
@@ -597,9 +729,17 @@ def get_all_products(db: Session = Depends(get_db)):
     return [ProductResponse.model_validate(p) for p in products]
 
 
-@app.put("/products/{product_id}", response_model=ProductResponse, tags=["Products"],
+@app.put("/products/{product_id}",
+         response_model=ProductResponse,
+         tags=["Products"],
+         summary="Полностью обновить продукт",
+         description="Полное обновление продукта. ВСЕ поля обязательны, включая is_available и stock_quantity.",
          dependencies=[Depends(get_current_admin)])
-def update_product(product_id: int, product_update: ProductUpdate, db: Session = Depends(get_db)):
+def update_product(
+        product_id: int,
+        product_data: ProductPutSchema,  # Используем ProductPutSchema вместо ProductUpdate
+        db: Session = Depends(get_db)
+):
     product = db.query(Product).filter(Product.id == product_id).first()
     if not product:
         raise HTTPException(
@@ -607,12 +747,90 @@ def update_product(product_id: int, product_update: ProductUpdate, db: Session =
             detail="Продукт не найден"
         )
 
-    update_data = product_update.model_dump(exclude_unset=True)
+    # Преобразуем Pydantic модель в словарь
+    update_data = product_data.model_dump()
+
+    # Применяем все обновления
     for field, value in update_data.items():
         setattr(product, field, value)
 
-    db.commit()
-    db.refresh(product)
+    try:
+        db.commit()
+        db.refresh(product)
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка при обновлении продукта: {str(e)}"
+        )
+
+    return ProductResponse.model_validate(product)
+
+
+@app.patch("/products/{product_id}",
+           response_model=ProductResponse,
+           tags=["Products"],
+           summary="Частично обновить продукт",
+           description="Обновляет только указанные поля продукта. Незаданные поля остаются без изменений.",
+           dependencies=[Depends(get_current_admin)])
+def partial_update_product(
+        product_id: int,
+        product_update: ProductUpdate,  # Используем ProductUpdate для PATCH
+        db: Session = Depends(get_db)
+):
+    product = db.query(Product).filter(Product.id == product_id).first()
+    if not product:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Продукт не найден"
+        )
+
+    # Получаем только установленные (не None) поля
+    update_data = product_update.model_dump(exclude_unset=True)
+
+    # Если ничего не передано, возвращаем текущий продукт
+    if not update_data:
+        return ProductResponse.model_validate(product)
+
+    # Валидация переданных полей
+    errors = []
+
+    if 'name' in update_data and update_data['name'] is not None:
+        if len(update_data['name']) < 2 or len(update_data['name']) > 100:
+            errors.append("Название должно быть от 2 до 100 символов")
+
+    if 'description' in update_data and update_data['description'] is not None:
+        if len(update_data['description']) < 10 or len(update_data['description']) > 1000:
+            errors.append("Описание должно быть от 10 до 1000 символов")
+
+    if 'price' in update_data and update_data['price'] is not None:
+        if update_data['price'] <= 0 or update_data['price'] > 1000000:
+            errors.append("Цена должна быть от 1 до 1,000,000")
+
+    if 'stock_quantity' in update_data and update_data['stock_quantity'] is not None:
+        if update_data['stock_quantity'] < 0 or update_data['stock_quantity'] > 100000:
+            errors.append("Количество должно быть от 0 до 100,000")
+
+    if errors:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"errors": errors}
+        )
+
+    # Применяем обновления
+    for field, value in update_data.items():
+        setattr(product, field, value)
+
+    try:
+        db.commit()
+        db.refresh(product)
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка при обновлении продукта: {str(e)}"
+        )
+
     return ProductResponse.model_validate(product)
 
 
@@ -727,9 +945,9 @@ def get_cart(current_user: User = Depends(get_current_user), db: Session = Depen
             item_data = {
                 "product_id": item.product_id,
                 "quantity": item.quantity,
-                "name": product.name,
-                "price": product.price,
-                "image_url": product.image_url,
+                "product_name": product.name,
+                "product_price": product.price,
+                "product_image_url": product.image_url,
                 "is_available": product.is_available,
                 "has_enough_stock": has_enough_stock,
                 "available_quantity": product.stock_quantity
