@@ -1,5 +1,5 @@
 import re
-from datetime import date
+from datetime import date, timedelta
 from typing import List, Optional
 from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -153,7 +153,6 @@ class UserUpdate(BaseModel):
     email: Optional[EmailStr] = None
     name: Optional[str] = None
     phone: Optional[str] = None
-    password: Optional[str] = None
 
 
 class UserResponse(BaseModel):
@@ -164,6 +163,19 @@ class UserResponse(BaseModel):
     is_admin: bool
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class UserRegister(BaseModel):
+    email: EmailStr
+    name: str
+    phone: str
+    password: str
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: UserResponse
 
 
 class ProductCreate(BaseModel):
@@ -535,6 +547,46 @@ def verify_token(token: str):
         return None
 
 
+@app.post("/register", response_model=TokenResponse, tags=["Authentication"])
+def register(user: UserRegister, db: Session = Depends(get_db)):
+    # Проверяем, существует ли уже пользователь с таким email
+    db_user = db.query(User).filter(User.email == user.email).first()
+    if db_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email уже зарегистрирован"
+        )
+
+    # Хэшируем пароль
+    hashed_password = get_password_hash(user.password)
+
+    # Создаем пользователя (is_admin всегда False для регистрации)
+    db_user = User(
+        email=user.email,
+        name=user.name,
+        phone=user.phone,
+        password=hashed_password,
+        is_admin=False  # Всегда False при регистрации
+    )
+
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+
+    # Создаем токен - передаем словарь с данными
+    token_data = {
+        "user_id": db_user.id,
+        "email": db_user.email,
+        "is_admin": db_user.is_admin
+    }
+    access_token = create_access_token(token_data)
+
+    return TokenResponse(
+        access_token=access_token,
+        user=UserResponse.model_validate(db_user)
+    )
+
+
 async def get_current_user(authorization: HTTPAuthorizationCredentials = Depends(security),
                            db: Session = Depends(get_db)):
     token_data = verify_token(authorization.credentials)
@@ -607,7 +659,19 @@ def login(request: LoginRequest, db: Session = Depends(get_db)):
 
 
 @app.post("/users", response_model=UserResponse, tags=["Users"])
-def create_user(user: UserCreate, db: Session = Depends(get_db)):
+def create_user(
+        user: UserCreate,
+        db: Session = Depends(get_db),
+        current_user: User = Depends(get_current_user)  # Используем вашу функцию
+):
+    # Проверяем, что текущий пользователь - админ
+    if not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Недостаточно прав"
+        )
+
+    # Проверяем, существует ли уже пользователь с таким email
     db_user = db.query(User).filter(User.email == user.email).first()
     if db_user:
         raise HTTPException(
@@ -615,13 +679,16 @@ def create_user(user: UserCreate, db: Session = Depends(get_db)):
             detail="Email уже зарегистрирован"
         )
 
+    # Хэшируем пароль
     hashed_password = get_password_hash(user.password)
+
+    # Создаем пользователя
     db_user = User(
         email=user.email,
         name=user.name,
         phone=user.phone,
         password=hashed_password,
-        is_admin=user.is_admin
+        is_admin=user.is_admin  # Админ может установить is_admin из запроса
     )
 
     db.add(db_user)
@@ -671,12 +738,61 @@ def update_user(user_id: int, user_update: UserUpdate, db: Session = Depends(get
             detail="Пользователь не найден"
         )
 
-    update_data = user_update.model_dump(exclude_unset=True)
-    if "password" in update_data:
-        update_data["password"] = get_password_hash(update_data["password"])
+    # Исключаем пароль из данных для обновления
+    update_data = user_update.model_dump(exclude_unset=True, exclude={"password"})
+
+    # Проверяем, что email остается уникальным (если обновляется email)
+    if "email" in update_data:
+        existing_user = db.query(User).filter(
+            User.email == update_data["email"],
+            User.id != user_id
+        ).first()
+        if existing_user:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Пользователь с таким email уже существует"
+            )
 
     for field, value in update_data.items():
         setattr(user, field, value)
+
+    db.commit()
+    db.refresh(user)
+    return UserResponse.model_validate(user)
+
+
+# Схема для обновления пароля
+class PasswordUpdate(BaseModel):
+    current_password: str
+    new_password: str
+
+
+@app.patch("/users/{user_id}/password", response_model=UserResponse, tags=["Users"])
+def update_password(user_id: int, password_update: PasswordUpdate, db: Session = Depends(get_db),
+                    current_user: User = Depends(get_current_user)):
+    if current_user.id != user_id and not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Недостаточно прав"
+        )
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Пользователь не найден"
+        )
+
+    # Проверка текущего пароля (для обычных пользователей)
+    if not current_user.is_admin or current_user.id == user_id:
+        if not verify_password(password_update.current_password, user.password):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Неверный текущий пароль"
+            )
+
+    # Обновление пароля
+    user.password = get_password_hash(password_update.new_password)
 
     db.commit()
     db.refresh(user)
