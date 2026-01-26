@@ -154,6 +154,20 @@ class UserUpdate(BaseModel):
     name: Optional[str] = None
     phone: Optional[str] = None
 
+    @field_validator('phone')
+    def validate_phone(cls, v):
+        v = v.strip()
+        cleaned = v.replace(" ", "")
+        if not v:
+            raise ValueError('Номер телефона не может быть пустым')
+        if len(v) < 10:
+            raise ValueError('Номер телефона должен содержать не менее 10 цифр')
+        if len(cleaned) > 12:
+            raise ValueError('Номер телефона должен содержать не более 12 цифр')
+        if not re.fullmatch(r'\+?\d+', cleaned):
+            raise ValueError('Номер телефона должен содержать только цифры и опционально символ + в начале')
+        return v
+
 
 class UserResponse(BaseModel):
     id: int
@@ -170,6 +184,30 @@ class UserRegister(BaseModel):
     name: str
     phone: str
     password: str
+
+    @field_validator('phone')
+    def validate_phone(cls, v):
+        v = v.strip()
+        cleaned = v.replace(" ", "")
+        if not v:
+            raise ValueError('Номер телефона не может быть пустым')
+        if len(v) < 10:
+            raise ValueError('Номер телефона должен содержать не менее 10 цифр')
+        if len(cleaned) > 12:
+            raise ValueError('Номер телефона должен содержать не более 12 цифр')
+        if not re.fullmatch(r'\+?\d+', cleaned):
+            raise ValueError('Номер телефона должен содержать только цифры и опционально символ + в начале')
+        return v
+
+    @field_validator('password')
+    def validate_password(cls, v):
+        v = v.strip()
+        if len(v) < 6:
+            raise ValueError('Пароль должен содержать не менее 6 символов')
+        if len(v) > 128:
+            raise ValueError('Пароль должен содержать не более 128 символов')
+
+        return v
 
 
 class TokenResponse(BaseModel):
