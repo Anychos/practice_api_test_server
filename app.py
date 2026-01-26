@@ -112,9 +112,66 @@ class Order(Base):
 def recreate_tables():
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
+    print("✅ Таблицы базы данных созданы")
 
 
 recreate_tables()
+
+
+def get_password_hash(password: str) -> str:
+    return pwd_context.hash(password)
+
+
+def create_admin_user():
+    db = SessionLocal()
+    try:
+        # Получаем данные администратора из переменных окружения
+        admin_email = os.getenv("ADMIN_EMAIL")
+        admin_password = os.getenv("ADMIN_PASSWORD")
+        admin_name = os.getenv("ADMIN_NAME")
+        admin_phone = os.getenv("ADMIN_PHONE")
+
+        if not admin_email or not admin_password:
+            print("⚠️ Переменные окружения ADMIN_EMAIL и ADMIN_PASSWORD не установлены")
+            return
+
+        # Проверяем, существует ли уже администратор
+        admin = db.query(User).filter(User.email == admin_email).first()
+
+        if not admin:
+            hashed_password = get_password_hash(admin_password)
+
+            admin_user = User(
+                email=admin_email,
+                name=admin_name,
+                phone=admin_phone,
+                password=hashed_password,
+                is_admin=True
+            )
+
+            db.add(admin_user)
+            db.commit()
+            db.refresh(admin_user)
+
+            print("=" * 50)
+            print("✅ АДМИНИСТРАТОР УСПЕШНО СОЗДАН!")
+            print(f"📧 Email: {admin_email}")
+            print(f"🔐 Пароль: {admin_password}")
+            print(f"👤 Имя: {admin_name}")
+            print(f"📱 Телефон: {admin_phone}")
+            print("=" * 50)
+
+        else:
+            print(f"ℹ️ Администратор уже существует: {admin_email}")
+
+    except Exception as e:
+        print(f"❌ Ошибка при создании администратора: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
+create_admin_user()
 
 
 class UserCreate(BaseModel):
