@@ -126,14 +126,10 @@ def create_admin_user():
     db = SessionLocal()
     try:
         # Получаем данные администратора из переменных окружения
-        admin_email = os.getenv("ADMIN_EMAIL")
-        admin_password = os.getenv("ADMIN_PASSWORD")
-        admin_name = os.getenv("ADMIN_NAME")
-        admin_phone = os.getenv("ADMIN_PHONE")
-
-        if not admin_email or not admin_password:
-            print("⚠️ Переменные окружения ADMIN_EMAIL и ADMIN_PASSWORD не установлены")
-            return
+        admin_email = "test_admin@mail.ru"
+        admin_password = "test_admin_password"
+        admin_name = "Admin"
+        admin_phone = "+71234567890"
 
         # Проверяем, существует ли уже администратор
         admin = db.query(User).filter(User.email == admin_email).first()
