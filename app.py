@@ -167,7 +167,105 @@ def create_admin_user():
         db.close()
 
 
+def create_test_user():
+    """Создание тестового пользователя (не админа)"""
+    db = SessionLocal()
+    try:
+        # Данные тестового пользователя
+        test_email = "test_user_login@example.com"
+        test_password = "test_password_login_123"
+        test_name = "test login"
+        test_phone = "+79876543210"
+
+        # Проверяем, существует ли уже пользователь
+        existing_user = db.query(User).filter(User.email == test_email).first()
+
+        if not existing_user:
+            hashed_password = get_password_hash(test_password)
+
+            test_user = User(
+                email=test_email,
+                name=test_name,
+                phone=test_phone,
+                password=hashed_password,
+                is_admin=False  # Обычный пользователь
+            )
+
+            db.add(test_user)
+            db.commit()
+            db.refresh(test_user)
+
+            print("=" * 50)
+            print("✅ ТЕСТОВЫЙ ПОЛЬЗОВАТЕЛЬ УСПЕШНО СОЗДАН!")
+            print(f"📧 Email: {test_email}")
+            print(f"🔐 Пароль: {test_password}")
+            print(f"👤 Имя: {test_name}")
+            print(f"📱 Телефон: {test_phone}")
+            print(f"👑 Администратор: Нет")
+            print("=" * 50)
+
+        else:
+            print(f"ℹ️ Тестовый пользователь уже существует: {test_email}")
+
+    except Exception as e:
+        print(f"❌ Ошибка при создании тестового пользователя: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
+def create_test_product():
+    """Создание тестового продукта"""
+    db = SessionLocal()
+    try:
+        # Данные тестового продукта
+        product_name = "Тестовый продукт"
+        product_description = "Это описание тестового продукта, созданного для демонстрации."
+        product_price = 123.99
+        product_image_url = "https://avatarko.ru/img/kartinka/1/Crazy_Frog.jpg"
+        product_stock = 100
+
+        # Проверяем, существует ли уже продукт с таким именем
+        existing_product = db.query(Product).filter(Product.name == product_name).first()
+
+        if not existing_product:
+            test_product = Product(
+                name=product_name,
+                description=product_description,
+                price=product_price,
+                image_url=product_image_url,
+                stock_quantity=product_stock,
+                is_available=True
+            )
+
+            db.add(test_product)
+            db.commit()
+            db.refresh(test_product)
+
+            print("=" * 50)
+            print("✅ ТЕСТОВЫЙ ПРОДУКТ УСПЕШНО СОЗДАН!")
+            print(f"🆔 ID: {test_product.id}")
+            print(f"📦 Название: {product_name}")
+            print(f"📝 Описание: {product_description}")
+            print(f"💰 Цена: {product_price:.2f} руб.")
+            print(f"🖼️ Изображение: {product_image_url}")
+            print(f"📊 Количество на складе: {product_stock}")
+            print(f"✅ Доступен: Да")
+            print("=" * 50)
+
+        else:
+            print(f"ℹ️ Тестовый продукт уже существует: {product_name}")
+
+    except Exception as e:
+        print(f"❌ Ошибка при создании тестового продукта: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
 create_admin_user()
+create_test_user()
+create_test_product()
 
 
 class UserCreate(BaseModel):
